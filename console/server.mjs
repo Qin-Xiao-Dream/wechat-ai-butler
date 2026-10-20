@@ -22,6 +22,7 @@ import {
 import { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Heartbeat } from './heartbeat.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PROJECT = resolve(HERE, '..')
@@ -1552,12 +1553,38 @@ function resolve_python() {
 /** 启停后端服务：复用项目里已有的启动器与清理脚本。 */
 function run_service(action) {
   const python = resolve_python()
-  const start = spawn(python, ['start_stack.py'], { cwd: PROJECT, detached: true, stdio: 'ignore', windowsHide: true })
+  // 用户手动重启期间不要自动插手
+  heartbeat.pause(`你手动执行了${action}`, 5 * 60_000)
+  // **必须先停再起**：以前直接 start_stack.py，如果旧进程还活着就会
+  // EADDRINUSE(3080) + "已有另一个微信消费者" 启动失败退出，看起来"重启了但没反应"。
+  if (action === 'restart') {
+    const stop_script = join(PROJECT, 'tools', 'stop_stack.py')
+    if (existsSync(stop_script)) {
+      try {
+        execFileSync(python, [stop_script, '--no-pause'], {
+          cwd: PROJECT, timeout: 60_000, stdio: 'ignore', windowsHide: true,
+          env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+        })
+      } catch { /* 旧进程可能本来就不在；继续启动 */ }
+    }
+  }
+  const start = spawn(python, ['start_stack.py'], {
+    cwd: PROJECT,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    // PYTHONUTF8=1：这台机器的 site-packages 里可能混进非 GBK 的 .pth（别的项目装的），
+    // 那会让 python 直接启动失败；UTF-8 模式能绕开。
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+  })
   start.unref()
-  return { ok: true, note: `已请求 ${action}（启动器会在后台完成；状态栏几秒后刷新）` }
+  return { ok: true, note: `已请求 ${action}${action === 'restart' ? '（已先停掉旧进程）' : ''}（启动器会在后台完成；状态栏几秒后刷新）` }
 }
 
 function stop_service() {
+  // 用户主动停掉后端 = 明确不要它跑：守护必须让路（否则会被自动拉起，等于停不掉）
+  // persist=true 会把"暂停"写进 runtime/guardian.pause —— 控制台自己重启也照样记住。
+  heartbeat.pause('你手动停掉了后端（要恢复自动重启请点"恢复自动重启"）', 24 * 3_600_000, { persist: true })
   // 统一走项目内的 tools/stop_stack.py（停止逻辑只保留一处，避免多处实现漂移）
   const stop_script = join(PROJECT, 'tools', 'stop_stack.py')
   if (existsSync(stop_script)) {
@@ -1577,6 +1604,26 @@ function stop_service() {
   child.unref()
   return { ok: true, note: '已请求停止后端服务（3080/3081 会随之关闭）' }
 }
+
+// ── 后端守护心跳 ─────────────────────────────────────────────────────────────
+
+/**
+ * 探活只认"真发 HTTP"的三件事：
+ * - harness 3080 在（Agent 本体的 Web 服务）；
+ * - 注入口 3081 在（连接器的心跳/管理口）。
+ * 两个都在才算"后端在"；任一掉线都算掉线。
+ */
+const heartbeat = new Heartbeat({
+  project_dir: PROJECT,
+  probes: [
+    { port: 3080, name: 'harness', url: 'http://127.0.0.1:3080/' },
+    { port: 3081, name: '注入口', url: 'http://127.0.0.1:3081/' },
+  ],
+  probe_http,
+  resolve_python,
+  log_path: join(RUNTIME, 'heartbeat.log'),
+  config_path: join(CONFIG, 'heartbeat.json'),
+})
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
 
@@ -1625,6 +1672,7 @@ const server = createServer((req, res) => {
         case '/api/tools': return void send(api.tools())
         case '/api/logs': return void send(api.logs(url.searchParams.get('name') ?? 'probe', Number(url.searchParams.get('lines') ?? 200)))
         case '/api/usage': return void send(api.usage(Number(url.searchParams.get('days') ?? 7)))
+        case '/api/heartbeat': return void send(heartbeat.snapshot())
         default: return json(res, 404, { error: 'unknown api' })
       }
     }
@@ -1660,6 +1708,16 @@ const server = createServer((req, res) => {
             case '/api/compaction': return void send(api.set_compaction(body))
             case '/api/preset/reload': return void api.reload_preset().then(send, fail)
             case '/api/toggles': return void send(api.set_toggle(body))
+            case '/api/heartbeat': return void send(heartbeat.set_config(body))
+            case '/api/heartbeat/resume': heartbeat.resume(); return void send(heartbeat.snapshot())
+            case '/api/heartbeat/pause': {
+              const minutes = Number(body.minutes)
+              const ms = Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 60 * 60_000
+              heartbeat.pause(String(body.reason ?? '外部请求暂停自动重启'), ms, { persist: body.persist !== false })
+              return void send(heartbeat.snapshot())
+            }
+            case '/api/heartbeat/ping': return void send(heartbeat.note_page_ping())
+            case '/api/heartbeat/check': return void heartbeat.tick('手动').then(send, fail)
             case '/api/service':
               if (body.action === 'stop') return void send(stop_service())
               return void send(run_service(String(body.action ?? 'restart')))
@@ -1680,4 +1738,6 @@ const server = createServer((req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Agent 控制台已启动: http://127.0.0.1:${PORT}`)
   console.log(`项目目录: ${PROJECT}`)
+  // 后端守护：定时探活，掉线到阈值就自动重启（前端页面也会发心跳触发检查）
+  heartbeat.start()
 })

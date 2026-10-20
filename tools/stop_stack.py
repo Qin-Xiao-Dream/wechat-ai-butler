@@ -3,33 +3,60 @@
 用途：`switch_model.py`、控制台和人工维护都用它，避免"停服务"的逻辑散落在多份脚本里
 （历史上就散过：一个放在系统临时目录的脚本被外部依赖着）。
 
+注意：停之前会先写"暂停自动重启"标记（`runtime/guardian.pause`），
+否则控制台的后端守护会把刚停掉的服务**立刻重新拉起来**（表现为"怎么停都停不掉"）。
+要恢复自动重启：控制台「后端守护」卡片点"恢复自动重启"，或删掉那个标记文件。
+
 用法：
-    python tools/stop_stack.py
+    python tools/stop_stack.py                # 停止（并写"暂停守护"标记）
+    python tools/stop_stack.py --no-pause     # 停止但不写标记（给"重启"用）
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # 判定"这是 harness 进程"的命令行特征（与 start_stack/控制台保持一致）
 HARNESS_PATTERN = re.compile(r"apps/cli/src/bin\.ts|pnpm[^\s]*\"?\s*dsh|startHarnessBackend", re.I)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PAUSE_MARKER = PROJECT_ROOT / "runtime" / "guardian.pause"
+
+
+def write_pause_marker(reason: str, hours: float = 24.0) -> Path:
+    """写"暂停自动重启"标记，让控制台的守护不要把我刚停掉的服务拉回来。"""
+    PAUSE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    now_ms = int(time.time() * 1000)
+    PAUSE_MARKER.write_text(
+        json.dumps({"reason": reason, "until": now_ms + int(hours * 3_600_000), "at": now_ms},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return PAUSE_MARKER
+
 
 
 def list_processes() -> list[dict]:
     """列出进程（Windows 走 PowerShell，其它平台走 ps）。"""
     if os.name != "nt":
-        out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True).stdout
+        out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace").stdout
         return [{"ProcessId": int(line.split(None, 1)[0]), "CommandLine": line.split(None, 1)[1]}
                 for line in out.splitlines() if len(line.split(None, 1)) == 2]
     import json
+    # 关键：显式让 PowerShell 输出 UTF-8，且 Python 也按 UTF-8 解码。
+    # 否则在 PYTHONUTF8=1 / 中文 Windows 下会出现"命令行的中文按 GBK 输出、Python 按 UTF-8 解"
+    # 的解码错误，结果**一个进程都没匹配到**（表现为"停不掉 harness"）。
     out = subprocess.run(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-Command",
+         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
          "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     ).stdout
     data = json.loads(out or "[]")
     return data if isinstance(data, list) else [data]
@@ -65,6 +92,15 @@ def port_free(port: int) -> bool:
 
 
 def main() -> int:
+    # --no-pause：给"重启"用（马上还要起回来），不要留暂停标记把守护按住
+    no_pause = "--no-pause" in sys.argv[1:]
+    if no_pause:
+        print("guardian_pause=skipped(--no-pause)")
+        if PAUSE_MARKER.exists():
+            PAUSE_MARKER.unlink()
+    else:
+        marker = write_pause_marker("命令行执行了 tools/stop_stack.py（停止后端）")
+        print("guardian_pause=%s" % marker)
     killed = kill_harness()
     print("killed=%s" % killed)
     time.sleep(3)

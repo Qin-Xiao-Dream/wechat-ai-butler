@@ -35,6 +35,22 @@
       <button id="btn-stop" class="danger">停止后端服务</button>
       <span class="hint" id="service-hint"></span>
     </div>
+    <div class="card">
+      <h3>后端守护（心跳） <span id="hb-badge" class="badge">读取中</span></h3>
+      <div id="hb-detail" class="hint">正在读取…</div>
+      <div class="row">
+        <label><input type="checkbox" id="hb-enabled" /> 掉线自动重启</label>
+        <label>间隔(秒) <input type="number" id="hb-interval" min="5" max="3600" step="5" style="width:74px" /></label>
+        <label>连续失败 <input type="number" id="hb-threshold" min="1" max="20" style="width:56px" /></label>
+        <label>冷却(分) <input type="number" id="hb-cooldown" min="1" max="1440" style="width:64px" /></label>
+        <label>每小时上限 <input type="number" id="hb-max" min="1" max="100" style="width:56px" /></label>
+        <button id="hb-save">保存</button>
+        <button id="hb-check">立即探活</button>
+        <button id="hb-resume" class="hb-hidden">恢复自动重启</button>
+      </div>
+      <div class="hint" id="hb-note"></div>
+      <pre id="hb-log"></pre>
+    </div>
     <div class="grid2">
       <div class="card">
         <h3>发送队列</h3>

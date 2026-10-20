@@ -745,10 +745,93 @@ $('log-select').addEventListener('change', refresh_log)
 $('log-filter').addEventListener('input', refresh_log)
 setInterval(() => { if ($('log-follow').checked) refresh_log() }, 3000)
 
+// ── 后端守护（心跳） ───────────────────────────────────────────────────────
+
+/**
+ * 渲染守护卡片：状态徽标、参数、说明与最近日志。
+ * 参数输入框只在"没被聚焦"时回填，免得你正在改数字时被刷新覆盖。
+ */
+function render_heartbeat(data) {
+  const badge = $('hb-badge')
+  const live = data.probe_results.filter(item => item.up).length
+  if (data.restarting) {
+    badge.textContent = '正在自动重启'; badge.className = 'badge warn'
+  } else if (data.paused) {
+    badge.textContent = '已暂停'; badge.className = 'badge warn'
+  } else if (data.consecutive_fails === 0 && live > 0) {
+    badge.textContent = '在线'; badge.className = 'badge ok'
+  } else {
+    badge.textContent = `掉线 ×${data.consecutive_fails}`; badge.className = 'badge bad'
+  }
+
+  const stamp = ms => (ms ? new Date(ms).toLocaleTimeString('zh-CN') : '—')
+  $('hb-detail').textContent = `${data.detail}　｜　最近探活 ${stamp(data.last_probe_at)}（来源 ${data.last_source || '—'}）`
+    + `　｜　最近恢复 ${stamp(data.last_ok_at)}　｜　最近重启 ${stamp(data.last_restart_at)}　${data.last_restart_result}`
+
+  const note = []
+  if (!data.config.enabled) note.push('自动重启已关闭（只探活）')
+  if (data.paused) note.push(`已暂停自动重启：${data.paused_reason}（点"恢复自动重启"解除）`)
+  note.push(`本小时已自动重启 ${data.restart_history.filter(t => t >= Date.now() - 3600000).length} 次（上限 ${data.config.max_restarts_per_hour}）`)
+  note.push(`前端心跳 ${data.page_pings} 次`)
+  $('hb-note').textContent = note.join('　｜　')
+
+  if (document.activeElement !== $('hb-interval')) $('hb-interval').value = Math.round(data.config.interval_ms / 1000)
+  if (document.activeElement !== $('hb-threshold')) $('hb-threshold').value = data.config.fail_threshold
+  if (document.activeElement !== $('hb-cooldown')) $('hb-cooldown').value = Math.round(data.config.cooldown_ms / 60000)
+  if (document.activeElement !== $('hb-max')) $('hb-max').value = data.config.max_restarts_per_hour
+  $('hb-enabled').checked = data.config.enabled === true
+  $('hb-resume').classList.toggle('hb-hidden', !data.paused)
+
+  $('hb-log').textContent = (data.recent ?? []).join('\n')
+  $('hb-log').scrollTop = $('hb-log').scrollHeight
+}
+
+/** 拉一次守护状态。 */
+async function refresh_heartbeat() {
+  render_heartbeat(await get('/api/heartbeat'))
+}
+
+$('hb-save').addEventListener('click', async () => {
+  try {
+    const data = await post('/api/heartbeat', {
+      enabled: $('hb-enabled').checked,
+      interval_ms: Number($('hb-interval').value) * 1000,
+      fail_threshold: Number($('hb-threshold').value),
+      cooldown_ms: Number($('hb-cooldown').value) * 60_000,
+      max_restarts_per_hour: Number($('hb-max').value),
+    })
+    render_heartbeat(data)
+    $('hb-note').textContent = '已保存：' + $('hb-note').textContent
+  } catch (error) {
+    $('hb-note').textContent = `保存失败：${error.message}`
+  }
+})
+
+$('hb-check').addEventListener('click', async () => {
+  $('hb-detail').textContent = '正在探活…'
+  try {
+    render_heartbeat(await post('/api/heartbeat/check'))
+  } catch (error) {
+    $('hb-detail').textContent = `探活失败：${error.message}`
+  }
+})
+
+$('hb-resume').addEventListener('click', async () => {
+  render_heartbeat(await post('/api/heartbeat/resume'))
+})
+
+/**
+ * 前端心跳：页面开着时每 30 秒给控制台发一次。
+ * 控制台收到后会按节流触发一次真探活；页面关掉也照样有定时器兜底。
+ */
+setInterval(() => { post('/api/heartbeat/ping').catch(() => {}) }, 30_000)
+setInterval(() => { refresh_heartbeat().catch(() => {}) }, 5_000)
+
 // ── 启动 ───────────────────────────────────────────────────────────────────
 
 setup_log_select()
 refresh_overview().catch(error => { $('status-strip').textContent = `读取失败：${error.message}` })
 refresh_models().catch(() => {})
 refresh_toggles().catch(() => {})
+refresh_heartbeat().catch(() => {})
 setInterval(refresh_overview, 15000)

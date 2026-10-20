@@ -20,6 +20,11 @@ $startupDir = [Environment]::GetFolderPath('Startup')
 $shortcutPath = Join-Path $startupDir '欣爱（微信后端）.lnk'
 $pythonw = 'D:\py39\pythonw.exe'
 $entry = Join-Path $projectRoot 'tools\autostart.py'
+# 走这个包装脚本，而不是直接跑 pythonw tools\autostart.py：
+# pythonw 直接启动时**不带 PYTHONUTF8**，一旦 site-packages 里混进非 GBK 的 .pth
+# （pip 的 editable 安装会写 UTF-8），python 会在 site 阶段就崩，自启静默失效。
+$wrapper = Join-Path $projectRoot 'tools\autostart-hidden.ps1'
+$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 function Show-Status {
     Write-Host "启动文件夹: $startupDir"
@@ -36,6 +41,7 @@ function Show-Status {
     }
     Write-Host "pythonw 存在: $(Test-Path -LiteralPath $pythonw)"
     Write-Host "自启入口存在: $(Test-Path -LiteralPath $entry)"
+    Write-Host "包装脚本存在: $(Test-Path -LiteralPath $wrapper)"
 }
 
 if ($Status) {
@@ -59,14 +65,17 @@ if (-not (Test-Path -LiteralPath $pythonw)) {
 if (-not (Test-Path -LiteralPath $entry)) {
     throw "找不到自启入口：$entry"
 }
+if (-not (Test-Path -LiteralPath $wrapper)) {
+    throw "找不到包装脚本：$wrapper"
+}
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $pythonw
-$shortcut.Arguments = '"' + $entry + '"'
+$shortcut.TargetPath = $powershell
+$shortcut.Arguments = '-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $wrapper + '"'
 $shortcut.WorkingDirectory = $projectRoot
 $shortcut.Description = '开机自启：拉起微信 harness 后端（欣爱）'
-$shortcut.WindowStyle = 7          # 最小化，pythonw 本就不弹窗，双保险
+$shortcut.WindowStyle = 7          # 最小化；powershell 再以隐藏方式拉起 pythonw
 $shortcut.Save()
 
 Write-Host "已注册开机自启：$shortcutPath"

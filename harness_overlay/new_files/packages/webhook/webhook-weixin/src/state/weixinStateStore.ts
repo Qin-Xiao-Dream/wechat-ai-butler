@@ -12,7 +12,8 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { probe, probe_timer } from '../diagnostics/probe.ts'
 import type {
@@ -689,10 +690,14 @@ export class WeixinStateStore {
 
   // ── lease ───────────────────────────────────────────────────────────────
 
-  /** 读取当前 lease（若有）。 */
-  get_lease(): { owner_id: string; pid: number; heartbeat_at: number; account_id: string } | undefined {
-    const row = this.db.prepare('SELECT owner_id, pid, heartbeat_at, account_id FROM consumer_lease WHERE id = 1').get() as
-      | { owner_id: string; pid: number; heartbeat_at: number; account_id: string }
+  /** 读取当前 lease（若有）。`process_started_at` 用于识别 pid 被回收的情况。 */
+  get_lease(): {
+    owner_id: string; pid: number; heartbeat_at: number; account_id: string; process_started_at: number
+  } | undefined {
+    const row = this.db.prepare(
+      'SELECT owner_id, pid, heartbeat_at, account_id, process_started_at FROM consumer_lease WHERE id = 1',
+    ).get() as
+      | { owner_id: string; pid: number; heartbeat_at: number; account_id: string; process_started_at: number }
       | undefined
     return row
   }
@@ -711,7 +716,9 @@ export class WeixinStateStore {
         // 判定顺序很重要：**持有者进程已死**时立即视为可抢占，
         // 否则被强杀（SIGKILL/任务管理器）的进程会把 lease 占到 stale 超时，
         // 造成"重启后拒绝启动"的假故障。
-        const alive = is_pid_alive(existing.pid)
+        // 注意：只看 "pid 存活 + 心跳新" 是不够的 —— Windows 会回收 pid，
+        // 被回收的 pid 会让陈旧 lease 看起来还活着（实测踩过：连接器一直拒绝启动）。所以这里校验启动时刻。
+        const alive = lease_holder_alive(existing.pid, existing.process_started_at)
         const fresh = now - existing.heartbeat_at < input.stale_ms
         if (alive && fresh) {
           probe('state', 'lease.busy', { held_by: existing.owner_id, pid: existing.pid, age_ms: now - existing.heartbeat_at })
@@ -786,6 +793,54 @@ function is_pid_alive(pid: number): boolean {
   } catch (error: unknown) {
     return (error as { code?: string }).code === 'EPERM'
   }
+}
+
+/**
+ * 读取某个 pid 的**进程启动时刻**（毫秒）；拿不到返回 undefined。
+ *
+ * 为什么需要它：Windows 会**回收 pid**。一个被强杀的持有者留下的 pid 可能被
+ * 另一个无关进程复用，于是"pid 存在 + 心跳还新"会让 lease 误判成"还活着"，
+ * 连接器就拒绝启动 —— 表现为"重启后怎么都起不来、微信不回消息"（实测踩过）。
+ * 真正可靠的身份判据是**启动时刻**：同一个 pid 的启动时刻对不上，就说明持有者已死。
+ */
+function process_started_at(pid: number): number | undefined {
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-Command',
+        `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
+        + `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; `
+        + `if ($p) { Write-Output ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() }`,
+      ], { encoding: 'utf8', timeout: 5_000, windowsHide: true })
+      const parsed = Number(out.trim())
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+    }
+    // POSIX：/proc 里的 starttime（时钟滴答）换算成毫秒
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    const startTicks = Number(fields[19])
+    if (!Number.isFinite(startTicks)) return undefined
+    const bootTime = readFileSync('/proc/stat', 'utf8').split('\n')
+      .find(line => line.startsWith('btime '))?.split(' ')[1]
+    const uptimeSeconds = Number(bootTime)
+    if (!Number.isFinite(uptimeSeconds)) return undefined
+    return (uptimeSeconds + startTicks / 100) * 1000
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 判断 lease 里的持有者是否**真的还在**：pid 存活 **且** 启动时刻对得上。
+ * 启动时刻拿不到时（权限/平台差异）退回"仅 pid 存活"，保持原有行为。
+ */
+function lease_holder_alive(pid: number, recorded_started_at: number): boolean {
+  if (!is_pid_alive(pid)) return false
+  const actual = process_started_at(pid)
+  if (actual === undefined) return true
+  // 写入方用 `Date.now() - uptime` 估算启动时刻，有几百毫秒到几秒误差；
+  // 60 秒的宽容窗口足以区分"同一进程"与"pid 被回收给新进程"。
+  return Math.abs(actual - recorded_started_at) <= 60_000
 }
 
 /** 行 → DeliveryRecord。 */

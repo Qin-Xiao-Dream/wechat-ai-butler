@@ -795,10 +795,10 @@ index c637c40..0000000
 -  }
 -}
 diff --git a/packages/webhook/webhook-weixin/src/runtime/weixinConnector.ts b/packages/webhook/webhook-weixin/src/runtime/weixinConnector.ts
-index 2f5495a..1cbfd8c 100644
+index 2f5495a..06371ad 100644
 --- a/packages/webhook/webhook-weixin/src/runtime/weixinConnector.ts
 +++ b/packages/webhook/webhook-weixin/src/runtime/weixinConnector.ts
-@@ -1,66 +1,1450 @@
+@@ -1,66 +1,1474 @@
 -/** 微信连接器运行时：组合 iLink、持久路由、Harness Agent Host 和 Cordis effect 生命周期。 */
 +﻿/**
 + * 微信连接器：把传输层、入站协调器、出站协调器与生命周期装配到一起。
@@ -2086,6 +2086,31 @@ index 2f5495a..1cbfd8c 100644
 +  }
 +
 +  /**
++   * 把模型接口的报错翻成"人话 + 该怎么办"。
++   *
++   * 为什么必须分类：以前**所有**失败都写"多半是额度/限额用完或 key 失效"，而实测
++   * 最常见的其实是传输层失败（OpenAI SDK 的 `APIConnectionError`，消息就是
++   * "Connection error."——接口那一小段时间连不上/连接被断开），跟额度完全无关。
++   * 说错原因会让用户白等额度、或者去换根本不坏的 key。
++   */
++  private explain_llm_failure(detail: string): string {
++    const text = detail.toLowerCase()
++    if (/connection error|fetch failed|econnreset|econnrefused|etimedout|enotfound|socket hang up|network|transport|proxy/.test(text)) {
++      return '这是**网络/接口连接**问题（不是额度）：接口那边这一小会儿没连上或把连接断了。让我重试一般就恢复。'
++    }
++    if (/quota|insufficient|余额|欠费|限额|额度/.test(text)) {
++      return '这是**额度/限额**问题：等额度恢复，或在控制台「模型选择」换一个模型。'
++    }
++    if (/401|403|unauthor|invalid.*key|api.?key|鉴权|auth/.test(text)) {
++      return '这是**鉴权**失败（key 失效或没权限）：需要换 key，或换一个模型。'
++    }
++    if (/429|rate.?limit|too many|限流/.test(text)) {
++      return '这是被**限流**了：稍等一下就好，我可以再试一次。'
++    }
++    return '可以让我再试一次；如果反复出现，就在控制台「模型选择」换一个模型。'
++  }
++
++  /**
 +   * 把卡住的一轮按失败收尾：**如实说明原因**，并把这一轮关掉。
 +   *
 +   * 宁可说"没做成 + 为什么"，也不要让用户对着"还在处理中"干等——
@@ -2100,8 +2125,7 @@ index 2f5495a..1cbfd8c 100644
 +    this.turn_error.delete(session_id)
 +    this.outbound.enqueue_assistant({
 +      session_id, user_id, turn,
-+      text: `我这轮没做成：模型接口报错「${detail.slice(0, 140)}」。\n`
-+        + '多半是额度/限额用完或 key 失效——换个模型（控制台「模型选择」）或等额度恢复后，再让我做一次。',
++      text: `我这轮没做成：模型接口报错「${detail.slice(0, 140)}」。\n${this.explain_llm_failure(detail)}`,
 +    })
 +    await this.handle_turn_end(session_id, turn)
 +  }
@@ -2121,7 +2145,7 @@ index 2f5495a..1cbfd8c 100644
 +        session_id,
 +        user_id: this.turn_context.resolve(session_id, turn)?.user_id ?? '',
 +        kind: 'assistant',
-+        text: `我这轮没做成：模型接口报错「${error.slice(0, 120)}」。要我再试一次吗？`,
++        text: `我这轮没做成：模型接口报错「${error.slice(0, 120)}」。\n${this.explain_llm_failure(error)}`,
 +      })
 +    }
 +    const aggregator = this.aggregators.get(session_id)

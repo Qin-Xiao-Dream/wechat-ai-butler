@@ -273,6 +273,73 @@ function create_tray() {
   tray.on('click', show_window)
 }
 
+// ── 前端自愈（控制台服务守护） ──────────────────────────────────────────────
+
+let superviseTimer = null
+let superviseFails = 0
+let superviseRestarts = []
+
+/**
+ * 探一下控制台服务是否**真的能响应**（不是"端口在监听"）。
+ * 用 /api/heartbeat 探：它既是健康检查，也顺带证明后端守护那一套在跑。
+ */
+async function console_api_alive() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${PORT}/api/heartbeat`, {
+      signal: AbortSignal.timeout(3000),
+      cache: 'no-store',
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 前端自愈：服务进程意外退出/卡死 → 自动重拉。
+ *
+ * 为什么放在 Electron 这边：后端守护住在**控制台服务进程**里，服务一死守护就没了，
+ * 于是"后端掉线能自动复活"这条链也会一起失效。这里让外壳（Electron 托盘常驻）
+ * 负责把服务拉回来 —— 窗口最小化到托盘、甚至窗口关掉都照样生效。
+ * 带退避与次数上限：10 分钟内最多 6 次，超过就只记日志不再折腾。
+ */
+async function supervise_console() {
+  if (quitting) return
+  if (await console_api_alive()) {
+    superviseFails = 0
+    return
+  }
+  superviseFails += 1
+  if (superviseFails < 2) return            // 连续两次无响应才动手，避免偶发抖动
+  const now = Date.now()
+  superviseRestarts = superviseRestarts.filter(stamp => now - stamp < 600_000)
+  if (superviseRestarts.length >= 6) {
+    if (superviseRestarts.length === 6) log('控制台服务反复无响应，已暂停自愈（10 分钟窗口内 6 次）')
+    superviseRestarts.push(now)
+    return
+  }
+  superviseRestarts.push(now)
+  superviseFails = 0
+  log('控制台服务无响应，正在自动重启（第', superviseRestarts.length, '次）')
+  try {
+    if (serverProcess && serverProcess.exitCode === null) {
+      try { serverProcess.kill() } catch { /* 已经退出了 */ }   // 卡死的旧进程先清掉，免得占着端口
+      await new Promise(resolve => setTimeout(resolve, 800))
+    }
+    const result = await ensure_server()
+    log('控制台服务自愈结果 =', result.ok, '|', String(result.detail).slice(0, 200))
+  } catch (error) {
+    log('控制台服务自愈异常：', String(error))
+  }
+}
+
+/** 启动前端自愈定时器（每 20 秒探一次）。 */
+function start_supervise_console() {
+  if (superviseTimer !== null) return
+  superviseTimer = setInterval(() => { void supervise_console() }, 20_000)
+  log('控制台自愈已启用（每 20 秒探活 /api/heartbeat）')
+}
+
 // ── 生命周期 ───────────────────────────────────────────────────────────────
 
 // 只允许一个实例：重复启动时把已有窗口叫出来
@@ -296,6 +363,7 @@ if (!app.requestSingleInstanceLock()) {
       return
     }
     create_window()
+    start_supervise_console()
     if (START_HIDDEN) {
       // 开机自启：静默驻留托盘（用户点托盘图标即可唤出）
       mainWindow.hide()

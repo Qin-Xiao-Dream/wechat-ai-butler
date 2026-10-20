@@ -77,6 +77,12 @@
 # 提示词里塞一段方位说明（约 1100 字符）："You are interacting with the user through the
 # DeepSeek Harness Web GUI at http://127.0.0.1:3080 … HMR … pnpm run dev:web …"
 # 对我们的部署是**假的**，还会把模型往“页面/构建”上带。web-app 自己就为此留了开关。
+#
+# 顺带关掉"启动时自动打开浏览器"：启动器虽然带了 --no-open（startHarnessBackend.ps1），
+# 但在 `--profile web` 这条路径上它没有生效（web-app 的 openBrowser 取自 CLI 的
+# ctx.webStartup.openBrowser，仍是默认 true），所以每次起后端都会弹出一个浏览器标签页
+# 显示 harness 的聊天框 —— 微信链路不需要，这里直接关。
 - id: web-runtime
   config:
     surfaceContext: false
+    openBrowser: false
