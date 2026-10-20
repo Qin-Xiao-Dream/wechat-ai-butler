@@ -13,9 +13,20 @@
 
 | 项目 | 值 |
 |---|---|
-| 基线提交（我们的上游导入点） | `0e3e35b`（`chore: import upstream deepseek harness baseline`） |
+| 上游 tag（实测可用） | `dsh-v0.1.6-alpha.2` |
+| 作者原始导入点 | `0e3e35b`（`chore: import upstream deepseek harness baseline`，非公开仓库提交） |
 | 交付文件数 | 85 |
 | 需要删除的旧文件 | 8（见 `delete.txt`） |
+
+> **v1.3 更正**：早期快照实际只有 83 个文件——`runtime/weixinConnector.ts`（核心装配层）与
+> `runtime/modelFailover.ts` 未随仓库发布。前者已从原始部署目录找回，后者依据
+> `tests/modelFailover.spec.ts` 的规格重建（文件头有说明），并已重算 `MANIFEST.json` 的 SHA-256。
+>
+> **基线校正**：overlay 的 `tsconfig.host.json` 引用 `packages/util/lazy-require`，而该包在
+> `dsh-v0.1.6-alpha.1` 中尚不存在、从 `alpha.2` 起才有；`apps/cli/package.json` 又停在
+> `alpha.1` 的版本号。据此判断作者基线是 alpha.1 与 alpha.2 之间的 master 提交，
+> 实测 **`dsh-v0.1.6-alpha.2`** 可用（仅需把 `packages/fs/tool-present` 改成
+> `packages/deliverables/tool-present`，该包在 alpha.2 已迁移）。
 
 > 我们的部署是在这个快照上开发的。上游如果大幅改动同名的包（尤其是 `packages/core/tools`、
 > `packages/llm`、`packages/compaction`），覆盖后可能需要自己适配；`overlay_files` 里的文件是**完整内容**，

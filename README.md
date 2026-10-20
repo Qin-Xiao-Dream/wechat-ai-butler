@@ -254,9 +254,12 @@ models:
 ## 10. 快速开始
 
 1. 装环境：Windows + Python 3.9（本项目用 `D:\py39`）+ Node 20+ + pnpm；本地模型需要 llama.cpp 与 8GB 显存（可选）。
+   > 实测 Python 3.12/3.13 亦可（脚本只依赖标准库 + PyYAML）。
 2. 拷一个 `config/modelConfig.example.json` → `config/modelConfig.json`，`config/secrets.example.json` → `config/secrets.json`，
    把 API Key 填进 **`secrets.json`**（`modelConfig.json` 永远不写密钥）。
 3. 把 `harness_overlay/` 里的改动应用到一份 DeepSeek Harness 检出（见该目录 README）。
+   实测可用上游 tag 为 **`dsh-v0.1.6-alpha.2`**，完整步骤、4 处适配点与两个环境坑见
+   [`docs/本机部署与适配记录.md`](docs/本机部署与适配记录.md)。
 4. 拷一个 `config/weixinProfile.patch.example.yml` → `config/weixinProfile.patch.yml`，**填你自己的人格提示词**。
 5. `python start_stack.py` 起后端；`python weixin_login.py` 扫码绑定微信。
 6. 需要图形界面就起 `console/`（`start-console.cmd`），需要开机自启用 `tools/install-autostart.ps1`。

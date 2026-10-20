@@ -4,12 +4,16 @@ config/secrets.json.bak*
 config/modelConfig.json
 config/modelConfig.json.bak*
 config/weixinProfile.patch.yml
+config/weixinDoubaoProfile.patch.yml
 config/console.env
 
 # 运行产物：日志里有聊天内容与账号指纹
-runtime/
+# 注意：必须锚定到仓库根目录。不加前导斜杠时，`runtime/` 会连
+# harness_overlay/overlay_files 里包的 `src/runtime/` 一起忽略——
+# 这正是 v1.2 交付里 weixinConnector.ts / modelFailover.ts 丢失的原因。
+/runtime/
 *.log
-logs/
+/logs/
 
 # 真实数据（通常位于用户目录，这里再挡一层）
 *.db
