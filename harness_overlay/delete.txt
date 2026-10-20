@@ -1,0 +1,8 @@
+packages/webhook/webhook-weixin/src/monitor/updateMonitor.ts
+packages/webhook/webhook-weixin/src/reply/replyBuffer.ts
+packages/webhook/webhook-weixin/src/session/harnessAgentHost.ts
+packages/webhook/webhook-weixin/src/session/sessionRouteStore.ts
+packages/webhook/webhook-weixin/src/session/weixinSessionAdapter.ts
+packages/webhook/webhook-weixin/tests/localReplay.spec.ts
+packages/webhook/webhook-weixin/tests/replyBuffer.spec.ts
+packages/webhook/webhook-weixin/tests/sessionRouteStore.spec.ts
