@@ -1,13 +1,17 @@
 ﻿# 微信电控AI管家
 
-把**一个真实微信账号**接成一个能记事、能跑代码、能控设备的私人 AI 管家。
+把**一个真实微信账号**接成一个能记事、能设提醒、能查关系图谱的私人 AI 管家。
 
 - **微信接入层**：抽取自 **OpenClaw 微信插件的 iLink 协议**（协议层不依赖 OpenClaw Runtime）
 - **对话后端**：**DeepSeek Harness**（会话、工具、审批、上下文压缩全在 Harness 侧）
 - **长期记忆**：时间数据库（按天的对话时间线）+ 知识图谱（人物/关系/属性/事件事实）
 - **本地模型**：Gemma 4 E4B（GGUF，llama.cpp），负责摘要、图谱抽取、图片描述
-- **外部 agent 桥**：把 codex / opencode 当成"手下"派活，结果按需取回
+- **外部 agent 桥**：把 codex / opencode 当成"手下"派活，结果按需取回（**需自行挂载插件，默认未启用**）
 - **控制台**：本地 Web + Electron 托盘，管模型、工具、记忆、微信绑定
+
+> **能力边界由「预设挂了哪些插件」决定，不由模型决定。** 仓库自带的最小权限预设
+> `config/presets/weixin-lite/` 只挂人格，**不提供 shell / 文件读写 / 浏览器 / 派活**——
+> 因为微信消息来自不可信输入。想扩权得自己往预设里加，见第 3 节。
 
 > 本仓库**只包含代码、配置模板与文档**。密钥、人格提示词正文、聊天记录、时间线/图谱数据、账号标识**一律不在仓库内**，详见《隐私与安全》。
 
@@ -95,8 +99,23 @@ DeepSeek Harness 后端
 
 - 模型调用默认协议：**`openai-responses`**（也支持 `chat-completions`）；
 - 会话：一个微信联系人 → 一个 Harness Agent/Session；上下文清空 = 换 epoch + 删会话文件，而不是继续携带历史；
-- 权限：本项目为了自动跑工具用了 `danger-full-access`。**这是危险配置**，请只在你能承受后果的机器上用，或改用审批模式；
+- 权限：`start_stack.py` 默认注入 `DSH_PERMISSION_MODE=danger-full-access`（审批 never），因为这条链路上没人能点"同意"。
+  但**它只在"有工具可调"时才有意义**——默认预设不挂 shell / 文件工具，这个开关实际是空转；
+  一旦你往预设里加了执行类工具，它就真的不设防了；
 - 模型故障转移：按 `quota / rate_limit / auth / model_missing` 分类，切换到下一个可用模型并重做刚才那条消息（额度类冷却 1 小时，鉴权类 24 小时）。
+
+### 预设（agent preset）才是能力的真正边界
+
+`agent_preset` 决定一个 Agent 挂哪些插件。仓库自带 `config/presets/weixin-lite/`，
+**只挂 `persona` 一个插件**，不提供 shell、文件读写、浏览器、子代理、外部 agent 派活。
+
+这么配的理由不是"省事"，而是**微信消息来自不可信输入**：任何能给这个微信号发消息的人，
+都会成为提示词的提供者。在这个前提下，"能不能执行命令"不该由模型的判断力兜底。
+
+要扩权就往 `config/presets/weixin-lite/agent.cordis.yml` 里追加插件，并把文件复制回
+`%USERPROFILE%\.dsh\.agent-presets\weixin-lite\`（Harness 只读用户目录下的预设）。
+常用的几个：`@deepseek-ai/dsh-tool-fs`（文件读写）、`dsh-terminal`（持久 shell，最危险）、
+`@deepseek-ai/dsh-tool-codex`（派活给 codex，见第 8 节）。
 
 `harness_overlay/` 目录是本项目对 Harness 的改动（补丁 + 新增文件）与落位说明。
 
@@ -106,7 +125,18 @@ DeepSeek Harness 后端
 
 1. **压缩预算与模型窗口绑定**。压缩预算必须 ≤ 模型上下文窗口，否则"永不压缩"。
    实测踩坑：把 `compressionBudget` 设成 400000，而豆包窗口只有 256k → 历史永远压不动，越聊越贵。
-   现在预设是 `compressionBudget: 180000 / retainTokens: 6000`（保留最近 6000 tokens 的近期状态与工具边界）。
+
+   > **这两个数值仓库里没有固化**，默认走 Harness 自身的压缩策略。要显式钉住，在
+   > `config/weixinProfile.patch.yml` 里加一条（插件名 `@deepseek-ai/dsh-compaction-basic`）：
+   >
+   > ```yaml
+   > - id: compaction-basic
+   >   config:
+   >     compressionBudget: 180000   # 必须 ≤ 所用模型的 contextWindow
+   >     retainTokens: 6000          # 保留最近 6000 tokens 的近期状态与工具边界
+   > ```
+   >
+   > 换模型时记得一起改：`contextWindow` 变小而这里不跟着降，等于关掉了压缩。
 2. **关掉无关的注入**。Harness 默认会往系统提示词里塞一段"你在 Web GUI 里…HMR…"的方位说明，
    对本场景全是浪费；`surfaceContext: false` 关掉后系统提示词从 8387 → **7153 字符**。
 3. **工具结果落盘（spill）**。长输出只把摘要 + 文件路径回给模型，正文不反复进上下文。
@@ -230,6 +260,12 @@ models:
   不存在就直接返回候选会话（防"猜 id"浪费一轮）；
 - 能真正取消：取消时杀外部进程树（`taskkill /T /F`），并**如实**回报"已中断 N 个外部任务"。
 
+> **默认部署下这条桥只读，不能派活。** `codex` / `opencode` 两个执行工具由
+> `tool-codex` / `tool-opencode` 插件提供，而最小权限预设（`weixin-lite`）不挂它们。
+> 此时连接器自带的 `bridge_sessions` / `bridge_results`（读会话、取停放结果）仍然可用。
+> 想让管家真的能派活，需要把这两个插件加进预设——代价是"任何能给这个微信号发消息的人"
+> 都能在这台机器上跑命令。
+
 ## 9. 目录结构
 
 ```
@@ -245,7 +281,8 @@ models:
 ├─ config/                     # 配置模板与后端启动脚本（**没有任何密钥**）
 │   ├─ modelConfig.example.json
 │   ├─ secrets.example.json
-│   └─ weixinProfile.patch.example.yml
+│   ├─ weixinProfile.patch.example.yml
+│   └─ presets/weixin-lite/    #   最小权限预设（只挂 persona），需复制到 ~/.dsh 才生效
 ├─ docs/                       # 设计文档（接口/记忆/Gemma/token/部署）
 ├─ gemma/                      # Gemma 下载与校验脚本 + 文件清单
 └─ harness_overlay/            # 对 DeepSeek Harness 的改动（补丁 + 新增源码）
@@ -262,10 +299,29 @@ models:
 3. 把 `harness_overlay/` 里的改动应用到一份 DeepSeek Harness 检出（见该目录 README）。
    实测可用上游 tag 为 **`dsh-v0.1.6-alpha.2`**，完整步骤、4 处适配点与两个环境坑见
    [`docs/本机部署与适配记录.md`](docs/本机部署与适配记录.md)。
-4. 拷一个 `config/weixinProfile.patch.example.yml` → `config/weixinProfile.patch.yml`，**填你自己的人格提示词**。
-5. `python start_stack.py` 起后端；`python weixin_login.py` 扫码绑定微信。
-6. 需要图形界面就起 `console/`（`start-console.cmd`）。
-7. 想让它在登录后自动跑，注册自启：
+
+   构建必须**先 host 再 client**：
+
+   ```powershell
+   npm run build:lib:host
+   npm run build:lib:client     # 少了这一步，50 个 dsh-client-* 只有类型没有产物
+   ```
+
+   漏掉 client 面会在启动时报 `agentPresets 服务缺失`——预设加载不了，微信连接器起不来。
+   启动入口也必须走预编译产物 `node apps/cli/lib/bin.js`：用 `tsx` 会让同一个包实例化两份，
+   表现为工具调用报 `Cannot read properties of undefined (reading 'prepare')`（原因见同文档 4.6）。
+4. 安装最小权限预设（**Harness 只读用户目录下的预设**，仓库里的只是权威副本）：
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.dsh\.agent-presets" | Out-Null
+   Copy-Item -Recurse -Force config\presets\weixin-lite "$env:USERPROFILE\.dsh\.agent-presets\"
+   ```
+
+   示例补丁里的 `agent_preset: weixin-lite` 指向的就是它；漏掉这步会报找不到预设。
+5. 拷一个 `config/weixinProfile.patch.example.yml` → `config/weixinProfile.patch.yml`，**填你自己的人格提示词**。
+6. `python start_stack.py` 起后端；`python weixin_login.py` 扫码绑定微信。
+7. 需要图形界面就起 `console/`（`start-console.cmd`）。
+8. 想让它在登录后自动跑，注册自启：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File tools\install-autostart.ps1            # 注册

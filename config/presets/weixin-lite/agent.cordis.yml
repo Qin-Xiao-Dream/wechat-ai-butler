@@ -1,0 +1,30 @@
+# weixin-lite：微信通道专用最小权限预设。
+#
+# 仓库位置：config/presets/weixin-lite/
+# 安装位置：%USERPROFILE%\.dsh\.agent-presets\weixin-lite\
+#          （Harness 只认用户目录下的预设，仓库里的这份是权威副本，改完记得复制过去）
+#
+# 设计原则：微信消息来自不可信输入（任何能给这个账号发消息的人），
+# 因此这里**只挂 persona 一个插件**，刻意不提供：
+#   - dsh-terminal / tool-bash-persistent / tool-pwsh-persistent（持久 shell）
+#   - dsh-tool-fs / dsh-tool-fs-search（文件读写与搜索）
+#   - dsh-tool-browser / browser-use（浏览器）
+#   - dsh-tool-subagent / workflow（自派生代理）
+#   - tool-codex / tool-opencode（往外部 agent 派活）
+#
+# 时间上下文与日程提醒由 profile patch 在宿主层注入（config/weixinProfile.patch.yml
+# 里的 time-context / schedule 两条 insert），不需要在预设里重复挂载。
+#
+# 想让它能执行命令，就往下面追加对应插件——但要想清楚：那等于把 shell 交给
+# 任何能给这个微信号发消息的人。
+#
+# persona 的正文来自补丁里的 system-prompt.personaPrefix（默认留空 → 使用 Harness 默认提示词）。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: ''
+    # false：允许宿主层的 system-prompt 与工具说明继续拼接，
+    # true 会把 persona 当成完整系统提示词，屏蔽其它段。
+    complete: false
+    includeRuntimeContext: true
