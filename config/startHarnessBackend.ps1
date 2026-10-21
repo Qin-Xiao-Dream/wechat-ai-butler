@@ -47,4 +47,20 @@ $env:DSH_WEIXIN_STATE_FILE = Join-Path $projectRoot 'runtime\weixin-route-state.
 if ([string]::IsNullOrWhiteSpace($env:DSH_WEIXIN_INJECT_PORT)) { $env:DSH_WEIXIN_INJECT_PORT = '3081' }
 New-Item -ItemType Directory -Path (Split-Path -Parent $env:DSH_WEIXIN_STATE_FILE) -Force | Out-Null
 Set-Location -LiteralPath $harnessRoot
-pnpm dsh --patch $patchFile --patch $disabledToolsPatchFile --profile web --no-open
+
+# 启动方式说明（本机适配）：
+# 原脚本用 `pnpm dsh`，但本机 pnpm 不在 PATH，且 `pnpm <script>` 会把 --patch 当成 pnpm
+# 自身参数、并有触发二次安装的风险（见 docs/本机部署与适配记录.md §4.5）。
+#
+# 这里必须走**预编译产物** apps/cli/lib/bin.js，不能用 `node --import tsx/esm src/bin.ts`：
+# tsx 会按 tsconfig.base.json 的 paths 把 `@deepseek-ai/dsh-tools` 解析到 src/index.ts，
+# 而插件加载器走 package.json exports 的 lib/index.js —— 同一个包被实例化两次，
+# TOOL_RUNTIME_SCHEDULER 这个 Symbol 身份不一致，任何工具调用都会抛
+# `Cannot read properties of undefined (reading 'prepare')`（2026-10-22 实测定位）。
+# 直跑 lib 时解析路径统一，工具调用正常。
+$nodeExe = Join-Path $env:USERPROFILE '.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe'
+if (-not (Test-Path -LiteralPath $nodeExe)) { $nodeExe = 'node' }
+& $nodeExe apps/cli/lib/bin.js `
+  --patch $patchFile `
+  --patch $disabledToolsPatchFile `
+  --profile web --no-open
