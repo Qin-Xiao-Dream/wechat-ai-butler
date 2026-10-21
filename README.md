@@ -253,8 +253,10 @@ models:
 
 ## 10. 快速开始
 
-1. 装环境：Windows + Python 3.9（本项目用 `D:\py39`）+ Node 20+ + pnpm；本地模型需要 llama.cpp 与 8GB 显存（可选）。
-   > 实测 Python 3.12/3.13 亦可（脚本只依赖标准库 + PyYAML）。
+1. 装环境：Windows + Python 3.9+ + Node 20+ + pnpm；本地模型需要 llama.cpp 与 8GB 显存（可选）。
+   > 脚本只依赖标准库 + PyYAML，实测 Python 3.12/3.13 亦可。
+   > **不要写死解释器路径**：不同机器装在不同盘，`start_stack.py` 会把可用解释器记进 `config/console.env`，
+   > 自启脚本再读这个记录去定位 `pythonw.exe`。
 2. 拷一个 `config/modelConfig.example.json` → `config/modelConfig.json`，`config/secrets.example.json` → `config/secrets.json`，
    把 API Key 填进 **`secrets.json`**（`modelConfig.json` 永远不写密钥）。
 3. 把 `harness_overlay/` 里的改动应用到一份 DeepSeek Harness 检出（见该目录 README）。
@@ -262,7 +264,21 @@ models:
    [`docs/本机部署与适配记录.md`](docs/本机部署与适配记录.md)。
 4. 拷一个 `config/weixinProfile.patch.example.yml` → `config/weixinProfile.patch.yml`，**填你自己的人格提示词**。
 5. `python start_stack.py` 起后端；`python weixin_login.py` 扫码绑定微信。
-6. 需要图形界面就起 `console/`（`start-console.cmd`），需要开机自启用 `tools/install-autostart.ps1`。
+6. 需要图形界面就起 `console/`（`start-console.cmd`）。
+7. 想让它在登录后自动跑，注册自启：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\install-autostart.ps1            # 注册
+   powershell -ExecutionPolicy Bypass -File tools\install-autostart.ps1 -Status    # 查状态
+   powershell -ExecutionPolicy Bypass -File tools\install-autostart.ps1 -Remove    # 注销
+   ```
+
+   - 注册的是**登录时**启动，不是开机时启动：要先登录进桌面。
+   - `pythonw.exe` **不写死路径**：依次探测 `$env:PYTHONW` → `config/console.env` 里记录的 `PYTHON` →
+     PATH → `%LOCALAPPDATA%\Programs\Python` → 旧路径 `D:\py39`；全都找不到就**报错退出**，
+     不会留下一个指向空路径的快捷方式（那种失效不报错、不弹窗，最难排查）。
+   - `tools\autostart.py` 会先等 45 秒（`--delay` 可调）再拉起后端，给开机时的网络/代理留时间。
+   - **笔记本只装自启不等于 24 小时在线**：合盖与插电待机都会让连接器断掉，见《部署运维与隐私》第 4 节。
 
 ## 11. 稳定性：后端守护（心跳）与"停不干净"
 

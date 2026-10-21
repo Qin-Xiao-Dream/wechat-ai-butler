@@ -18,7 +18,43 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $startupDir = [Environment]::GetFolderPath('Startup')
 $shortcutPath = Join-Path $startupDir '欣爱（微信后端）.lnk'
-$pythonw = 'D:\py39\pythonw.exe'
+# pythonw 不写死路径。原来固定成 D:\py39\pythonw.exe，那是原作者机器的安装位置；
+# 换一台机器就会生成"指向空文件"的快捷方式——开机后什么都不发生，而且不报错、不弹窗。
+# 探测顺序：环境变量 PYTHONW → config/console.env 里 start_stack.py 记录过的解释器 →
+#           PATH 里的 pythonw → %LOCALAPPDATA%\Programs\Python 下的安装 → 旧路径 D:\py39。
+function Resolve-Pythonw {
+    $candidates = @()
+    if ($env:PYTHONW) { $candidates += $env:PYTHONW }
+    $envFile = Join-Path $projectRoot 'config\console.env'
+    if (Test-Path -LiteralPath $envFile) {
+        $hit = Select-String -LiteralPath $envFile -Pattern '^\s*PYTHON\s*=\s*(.+?)\s*$' | Select-Object -First 1
+        if ($hit) {
+            $py = $hit.Matches[0].Groups[1].Value.Trim('"').Trim("'")
+            if ($py) { $candidates += (Join-Path (Split-Path -Parent $py) 'pythonw.exe') }
+        }
+    }
+    $onPath = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $candidates += $onPath.Source }
+    $localPy = Join-Path $env:LOCALAPPDATA 'Programs\Python'
+    if (Test-Path -LiteralPath $localPy) {
+        $candidates += (Get-ChildItem -LiteralPath $localPy -Filter 'pythonw.exe' -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | ForEach-Object { $_.FullName })
+    }
+    $candidates += 'D:\py39\pythonw.exe'
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+$pythonw = Resolve-Pythonw
+# 查状态/注销不强依赖 pythonw：机器上没装也该能看清"到底注册没注册"。
+if (-not $pythonw -and -not ($Status -or $Remove)) {
+    Write-Host '[错误] 找不到 pythonw.exe，已放弃注册（不会留下指向空路径的快捷方式）。' -ForegroundColor Red
+    Write-Host '       指定路径后重试：$env:PYTHONW = "C:\...\pythonw.exe"' -ForegroundColor Yellow
+    exit 1
+}
+if ($pythonw) { Write-Host "pythonw: $pythonw" }
 $entry = Join-Path $projectRoot 'tools\autostart.py'
 # 走这个包装脚本，而不是直接跑 pythonw tools\autostart.py：
 # pythonw 直接启动时**不带 PYTHONUTF8**，一旦 site-packages 里混进非 GBK 的 .pth
@@ -39,7 +75,11 @@ function Show-Status {
     } else {
         Write-Host "状态:       未注册"
     }
-    Write-Host "pythonw 存在: $(Test-Path -LiteralPath $pythonw)"
+    if ($pythonw) {
+        Write-Host "pythonw 存在: $(Test-Path -LiteralPath $pythonw)  ($pythonw)"
+    } else {
+        Write-Host "pythonw 存在: 未找到（注册会失败）"
+    }
     Write-Host "自启入口存在: $(Test-Path -LiteralPath $entry)"
     Write-Host "包装脚本存在: $(Test-Path -LiteralPath $wrapper)"
 }
