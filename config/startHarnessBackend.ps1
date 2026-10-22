@@ -48,6 +48,16 @@ if ([string]::IsNullOrWhiteSpace($env:DSH_WEIXIN_INJECT_PORT)) { $env:DSH_WEIXIN
 New-Item -ItemType Directory -Path (Split-Path -Parent $env:DSH_WEIXIN_STATE_FILE) -Force | Out-Null
 Set-Location -LiteralPath $harnessRoot
 
+# PowerShell 7 的定位：工具层（tool-pwsh → pwsh-sandbox）按 `%ProgramFiles%\PowerShell\7\pwsh.exe`
+# 与 PATH 里的 pwsh.exe 依次查找。本机若装在用户目录（免管理员安装），就要显式补进 PATH，
+# 否则会回退到 Windows PowerShell 5.1 —— 那个版本在沙箱受限令牌下 .NET 起不来，
+# 表现为每条命令都报「缺少 .NET Framework v4.0.30319（exit 4294901760）」。
+# 只改本进程环境，不动系统 PATH。
+$pwshDir = Join-Path $env:LOCALAPPDATA 'Programs\PowerShell\7'
+if (Test-Path -LiteralPath (Join-Path $pwshDir 'pwsh.exe')) {
+  $env:PATH = "$pwshDir;$env:PATH"
+}
+
 # 启动方式说明（本机适配）：
 # 原脚本用 `pnpm dsh`，但本机 pnpm 不在 PATH，且 `pnpm <script>` 会把 --patch 当成 pnpm
 # 自身参数、并有触发二次安装的风险（见 docs/本机部署与适配记录.md §4.5）。

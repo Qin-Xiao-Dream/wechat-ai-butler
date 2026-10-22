@@ -350,10 +350,19 @@ describe('ReplyAggregator', () => {
 
   it('够长的句末标点内容才会立刻分段', () => {
     const aggregator = new ReplyAggregator()
-    const long = '我已经帮你把脚本写好了，放在 SynLove 工作区的 scripts 目录里，并且跑通验证过了。'
+    // 必须超过 MIN_SEGMENT_CHARS（200）：正常答复（人设限 150 字）应当整条发出，不被标点切开。
+    const long = '我已经帮你把脚本写好了，放在工作区的 scripts 目录里，并且跑通验证过了。'.repeat(8)
     const segments = aggregator.accept_chunk(long)
     expect(segments).toHaveLength(1)
-    expect(segments[0]).toContain('SynLove')
+    expect(segments[0]).toContain('scripts')
+  })
+
+  it('150 字以内的答复始终是一整条', () => {
+    const aggregator = new ReplyAggregator()
+    const reply = '数字我拿不到，不是命令写错，是这台机器上的 PowerShell 起不来。三次不同命令全部在启动阶段就挂了，报的是同一条错。要不要我装个新的？'
+    const segments = aggregator.accept_chunk(reply)
+    expect(segments).toHaveLength(0)
+    expect(aggregator.finish()).toContain('不是命令写错')
   })
 
   it('单轮分段有上限，超出部分并入尾段', () => {

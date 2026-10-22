@@ -24,14 +24,18 @@ const KEPT = new Set(['！', '!', '？', '?'])
 /**
  * 一段至少要有这么多字符才值得单独发一条。
  * 太短的（如"好呀。"）会与后续内容合并，避免把回复打碎成很多条。
+ *
+ * 提到 200（原 40）：人设把回复限制在 150 字以内，40 的门槛等于"只要过 40 字就可能被
+ * 标点切一刀"，实测一条答复被拆成 3 条发出去。200 让正常答复始终是一整条，
+ * 长输出（工具结果摘要等）仍按标点切。
  */
-const MIN_SEGMENT_CHARS = 40
+const MIN_SEGMENT_CHARS = Number(process.env.DSH_WEIXIN_MIN_SEGMENT_CHARS ?? '200')
 
 /**
  * 单轮最多切成几条。超出后不再切分，剩余内容并入尾段一起发。
  * 这是对"限流"的硬保护：一轮回复最多产生这么多条出站消息。
  */
-const MAX_SEGMENTS_PER_TURN = 4
+const MAX_SEGMENTS_PER_TURN = Number(process.env.DSH_WEIXIN_MAX_SEGMENTS ?? '2')
 
 /** 模型泄漏到正文里的思考标签；回传前剥掉。 */
 const THINK_TAG = /<\/?think[^<>]*>/gi

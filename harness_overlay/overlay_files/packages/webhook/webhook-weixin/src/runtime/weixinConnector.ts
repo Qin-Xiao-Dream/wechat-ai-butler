@@ -81,6 +81,11 @@ export interface WeixinConnectorOptions extends IlinkClientOptions {
   readonly agent_preset?: string
   /** 工作目录。 */
   readonly workspace_path?: string
+  /**
+   * 发送者白名单（iLink `from_user_id`）。
+   * 未配置 = 不过滤；空数组 = 全拒。挂载 shell / 文件工具的部署必须配置。
+   */
+  readonly allowed_user_ids?: string[]
   /** 模型 provider / model（记录进 Session 元数据，并传给 Agent 解析提示变量）。 */
   readonly provider?: string
   readonly model?: string
@@ -229,6 +234,8 @@ export class WeixinConnector {
   private readonly graph: KnowledgeGraphStore
   /** 会话工作目录（会话落盘路径由它推导，必须与 HarnessSessionHost 一致）。 */
   private readonly workspace_path: string = process.cwd()
+  /** 发送者白名单原样保留，供启动时打印可见的状态（undefined = 未配置）。 */
+  private readonly allowed_user_ids: readonly string[] | undefined
   /** 通知开关：codex / opencode 的完成汇报是否推送。 */
   private readonly notify: NotifySettings
   /** 摘要调度器（低频、纯本地检查；与 iLink 轮询无关）。 */
@@ -313,6 +320,7 @@ export class WeixinConnector {
     this.client = new IlinkClient(options)
     // 会话文件的工程目录名由 cwd 推导，必须和 HarnessSessionHost 用的是同一个值。
     this.workspace_path = options.workspace_path ?? process.cwd()
+    this.allowed_user_ids = options.allowed_user_ids
     // 当前模型：故障转移的起点（之后由 selectModel 改动）
     this.current_model = {
       provider: options.provider ?? '',
@@ -335,6 +343,7 @@ export class WeixinConnector {
     })
     this.ingress = new WeixinIngress({
       client: this.client,
+      ...options.allowed_user_ids === undefined ? {} : { allowed_user_ids: options.allowed_user_ids },
       observer: {
         on_error: error => probe('ingress', 'observer.error', { error: String(error) }),
         on_status: (status, detail) => probe('ingress', 'observer.status', { status, detail }),
@@ -471,6 +480,20 @@ export class WeixinConnector {
 
   /** 真正的启动序列。 */
   private async run(): Promise<void> {
+    // 0. 白名单状态必须显式可见。
+    // 未配置时"任何能给这个 bot 发消息的账号都会被受理"，而预设一旦挂了 shell，
+    // 这就等于把本机命令执行权交给陌生人。这类配置缺失不能只写进探针文件：
+    // 大多数人是看 harness-run.log 才发现不对的。
+    if (this.allowed_user_ids === undefined) {
+      console.error('[webhook-weixin] 警告：未配置 allowed_user_ids，'
+        + '任何能给该 bot 发消息的账号都会被受理（纯对话预设可接受，挂了工具则不可接受）。')
+      probe('lifecycle', 'allowlist.unset')
+    } else if (this.allowed_user_ids.length === 0) {
+      console.error('[webhook-weixin] allowed_user_ids 是空数组：所有入站消息都会被丢弃。')
+      probe('lifecycle', 'allowlist.empty')
+    } else {
+      probe('lifecycle', 'allowlist.enforced', { count: this.allowed_user_ids.length })
+    }
     // 1. OpenClaw 隔离 preflight（设计文档 §9.2）。
     if (process.env.DSH_WEIXIN_SKIP_OPENCLAW_CHECK !== '1') {
       const isolation = preflight_openclaw_isolation()

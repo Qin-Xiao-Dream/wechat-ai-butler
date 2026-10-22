@@ -70,6 +70,13 @@
         provider: !!js process.env.DSH_DEFAULT_PROVIDER
         model: !!js process.env.DSH_DEFAULT_MODEL
         agent_preset: weixin-lite
+        # 发送者白名单（iLink 的 from_user_id，形如 `oXXXX@im.wechat`）。
+        # **挂了 shell / 文件工具的预设必须配置这一项**：连接器会为每个发送者
+        # 建独立会话，不限制等于任何能给这个 bot 发消息的人都能在你机器上执行命令。
+        # 自己的 id 可以从 %USERPROFILE%\.dsh\weixin-state.db 的 route 表里查。
+        # 不写 = 不过滤（启动日志会打印警告）；空数组 = 全部拒绝。
+        allowed_user_ids:
+          - oAAAAAAAAAAAAAAAAAAAAA@im.wechat
         send_retry_count: 3
         send_retry_delay_ms: 1000
 

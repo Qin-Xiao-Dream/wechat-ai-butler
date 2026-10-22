@@ -33,6 +33,19 @@ export interface Config {
   state_db?: string
   /** lease 标记文件（诊断）。 */
   lease_marker?: string
+  /**
+   * 允许使用该机器人的微信 user_id 白名单（iLink 的 `from_user_id`）。
+   *
+   * 之所以必须存在：一个 bot 可能被多个微信账号发起会话，而连接器会为**每个**
+   * 发送者建独立 Session。一旦预设里挂了 shell / 文件工具，"能给这个 bot 发消息"
+   * 就等于"能在这台机器上执行命令"。
+   *
+   * 语义：
+   * - 不配置（undefined）→ 不限制。仅适用于纯对话预设，挂工具时是危险配置；
+   * - 空数组 → 拒绝所有人（入站全丢，用于紧急止血）；
+   * - 非空 → 只放行列出的 user_id，其余消息**静默丢弃**（不回执，避免变成放大器）。
+   */
+  allowed_user_ids?: string[]
 }
 
 /** Schemastery 配置定义，保持模型/API 配置与代码分离。 */
@@ -50,6 +63,7 @@ export const Config: z<Config> = z.object({
   send_retry_delay_ms: z.number(),
   state_db: z.string(),
   lease_marker: z.string(),
+  allowed_user_ids: z.array(z.string()),
 })
 
 /** 注册微信连接器，并把长轮询与生命周期交给 Cordis effect。 */
@@ -62,6 +76,10 @@ export function apply(ctx: Context, config: Config): void {
     provider: config.provider,
     model: config.model,
     state_db: config.state_db ?? '(default)',
+    // 白名单状态必须在启动日志里可见：`(unset)` 意味着"谁知道 bot 号谁就能用"。
+    allowlist: config.allowed_user_ids === undefined
+      ? '(unset)'
+      : `${config.allowed_user_ids.length} user(s)`,
   })
   install_weixin_connector(ctx, config as unknown as Parameters<typeof install_weixin_connector>[1])
 }

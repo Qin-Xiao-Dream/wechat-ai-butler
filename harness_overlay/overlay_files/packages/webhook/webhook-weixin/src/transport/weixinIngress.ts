@@ -33,6 +33,11 @@ export type IngressResult =
 export interface WeixinIngressOptions {
   readonly client: IlinkClient
   readonly observer?: IngressObserver
+  /**
+   * 发送者白名单（iLink `from_user_id`）。
+   * `undefined` = 不过滤；`[]` = 全拒；非空 = 只放行列出的账号。
+   */
+  readonly allowed_user_ids?: readonly string[]
 }
 
 /** iLink getUpdates 的传输封装。 */
@@ -40,11 +45,16 @@ export class WeixinIngress {
   private readonly normalizer = new MessageNormalizer()
   private readonly client: IlinkClient
   private readonly observer: IngressObserver
+  /** 白名单集合；`undefined` 表示未配置（不过滤）。 */
+  private readonly allowed: ReadonlySet<string> | undefined
 
   /** 绑定协议客户端与观察器。 */
   constructor(options: WeixinIngressOptions) {
     this.client = options.client
     this.observer = options.observer ?? {}
+    this.allowed = options.allowed_user_ids === undefined
+      ? undefined
+      : new Set(options.allowed_user_ids)
   }
 
   /** 通知服务端消费者上线；失败抛出，由协调器决定是否致命。 */
@@ -112,13 +122,38 @@ export class WeixinIngress {
       probe('ingress', 'poll.idle')
       return { kind: 'idle', cursor: cursor_next }
     }
-    const messages = raw.map((message: IlinkMessage) => this.normalizer.normalize_message(message))
+    const normalized = raw.map((message: IlinkMessage) => this.normalizer.normalize_message(message))
+    const messages = this.filter_allowed(normalized)
+    // 整批都被白名单挡下：按 idle 返回并提交 cursor。
+    // 不能返回 messages（空数组）——那样协调器会当成"一批处理完"，语义上没错，
+    // 但 idle 更贴近事实，也省掉一次空批次落库。
+    if (messages.length === 0) return { kind: 'idle', cursor: cursor_next }
     probe('ingress', 'poll.messages', {
       count: messages.length,
       users: [...new Set(messages.map(m => m.user_id))],
       delivery_ids: messages.map(m => m.delivery_id),
     })
     return { kind: 'messages', messages, cursor: cursor_next }
+  }
+
+  /**
+   * 按白名单过滤发送者。
+   *
+   * 被拒消息**不回执**：回一句"你没有权限"等于向社会工程敞开一条自动回复通道，
+   * 而且会让任意陌生人确认这个号是个活的机器人。只留一条探针日志。
+   */
+  private filter_allowed(messages: NormalizedWeixinMessage[]): NormalizedWeixinMessage[] {
+    if (this.allowed === undefined) return messages
+    const kept = messages.filter(message => this.allowed?.has(message.user_id) === true)
+    if (kept.length !== messages.length) {
+      const blocked = messages.filter(message => this.allowed?.has(message.user_id) !== true)
+      probe('ingress', 'poll.blocked', {
+        count: blocked.length,
+        users: [...new Set(blocked.map(message => message.user_id))],
+        delivery_ids: blocked.map(message => message.delivery_id),
+      })
+    }
+    return kept
   }
 
   /** 下载媒体（供协调器的分片调度调用，不阻塞轮询）。 */

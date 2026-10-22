@@ -1,22 +1,22 @@
-# weixin-lite：微信通道专用最小权限预设。
+# weixin-lite：微信通道专用预设（对话 + 本机执行，绑定发送者白名单）。
 #
 # 仓库位置：config/presets/weixin-lite/
 # 安装位置：%USERPROFILE%\.dsh\.agent-presets\weixin-lite\
 #          （Harness 只认用户目录下的预设，仓库里的这份是权威副本，改完记得复制过去）
 #
-# 设计原则：微信消息来自不可信输入（任何能给这个账号发消息的人），
-# 因此这里**只挂 persona 一个插件**，刻意不提供：
-#   - dsh-terminal / tool-bash-persistent / tool-pwsh-persistent（持久 shell）
-#   - dsh-tool-fs / dsh-tool-fs-search（文件读写与搜索）
-#   - dsh-tool-browser / browser-use（浏览器）
-#   - dsh-tool-subagent / workflow（自派生代理）
-#   - tool-codex / tool-opencode（往外部 agent 派活）
+# 能力演进（2026-10-22）：从"只挂 persona 的纯对话"扩到"能在这台机器上干活"。
+# 这个改动**只在对端身份可验证时才成立**，所以它和连接器的 allowed_user_ids 是一对：
+#   - 连接器侧：只受理白名单里的微信 user_id，其余消息在 ingress 就被丢弃；
+#   - 预设侧：给这个受信身份挂上 shell 与文件工具。
+# 两者必须同时存在。只配预设不配白名单 = 任何能给 bot 发消息的人都能执行命令。
 #
-# 时间上下文与日程提醒由 profile patch 在宿主层注入（config/weixinProfile.patch.yml
+# 刻意**不**挂的东西：
+#   - 浏览器（浏览器 MCP 一次贡献 22 个工具、约 9000 字符，对"远程干活"没有增量价值）
+#   - subagent / workflow（自派生代理在本机跑，难以审计；需要时显式加）
+#   - tool-codex / tool-opencode（往外部 agent 派活；与直接执行相比只是多一层壳）
+#
+# 时间上下文与日程提醒由 profile patch 在宿主层注入（config/weixinDoubaoProfile.patch.yml
 # 里的 time-context / schedule 两条 insert），不需要在预设里重复挂载。
-#
-# 想让它能执行命令，就往下面追加对应插件——但要想清楚：那等于把 shell 交给
-# 任何能给这个微信号发消息的人。
 #
 # persona 的正文来自补丁里的 system-prompt.personaPrefix（默认留空 → 使用 Harness 默认提示词）。
 
@@ -28,3 +28,26 @@
     # true 会把 persona 当成完整系统提示词，屏蔽其它段。
     complete: false
     includeRuntimeContext: true
+
+# ── 命令执行 ────────────────────────────────────────────────────────────────
+# Windows 下注册 `pwsh` 工具；执行器（pwsh-sandbox）在宿主组合里，
+# 沙箱档位由 DSH_PERMISSION_MODE 决定（本部署是 danger-full-access）。
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+
+# ── 文件读写 ────────────────────────────────────────────────────────────────
+# read / write / edit / read_image：注册进宿主的 tools 注册表，自身不提供服务。
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+# glob / grep：按文件名与内容检索。大结果采样上限关掉，避免"搜到了但看不到"。
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── 后台任务 ────────────────────────────────────────────────────────────────
+# pwsh 支持 run_in_background，但没有这组控制工具的话，起了就收不回来。
+# 对微信场景尤其重要：超过几分钟的任务结果推不出去，只能靠 job 输出稍后再取。
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'

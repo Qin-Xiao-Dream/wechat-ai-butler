@@ -9,9 +9,10 @@
 - **外部 agent 桥**：把 codex / opencode 当成"手下"派活，结果按需取回（**需自行挂载插件，默认未启用**）
 - **控制台**：本地 Web + Electron 托盘，管模型、工具、记忆、微信绑定
 
-> **能力边界由「预设挂了哪些插件」决定，不由模型决定。** 仓库自带的最小权限预设
-> `config/presets/weixin-lite/` 只挂人格，**不提供 shell / 文件读写 / 浏览器 / 派活**——
-> 因为微信消息来自不可信输入。想扩权得自己往预设里加，见第 3 节。
+> **能力边界由两层决定：「连接器收谁的消息」+「预设挂了哪些插件」。** 仓库自带的
+> `config/presets/weixin-lite/` 挂 `persona + pwsh + fs + fs-search + jobs`（可执行命令、读写文件），
+> 它成立的安全前提是连接器的 `allowed_user_ids` 白名单——**两者必须同时配置**，
+> 只配预设不配白名单，等于把 shell 交给任何能给这个 bot 发消息的人。见第 3 节。
 
 > 本仓库**只包含代码、配置模板与文档**。密钥、人格提示词正文、聊天记录、时间线/图谱数据、账号标识**一律不在仓库内**，详见《隐私与安全》。
 
@@ -104,18 +105,33 @@ DeepSeek Harness 后端
   一旦你往预设里加了执行类工具，它就真的不设防了；
 - 模型故障转移：按 `quota / rate_limit / auth / model_missing` 分类，切换到下一个可用模型并重做刚才那条消息（额度类冷却 1 小时，鉴权类 24 小时）。
 
-### 预设（agent preset）才是能力的真正边界
+### 能力边界：白名单 × 预设
 
-`agent_preset` 决定一个 Agent 挂哪些插件。仓库自带 `config/presets/weixin-lite/`，
-**只挂 `persona` 一个插件**，不提供 shell、文件读写、浏览器、子代理、外部 agent 派活。
+一个 Agent 能做什么，由两个相互独立的开关共同决定，缺一不可：
 
-这么配的理由不是"省事"，而是**微信消息来自不可信输入**：任何能给这个微信号发消息的人，
-都会成为提示词的提供者。在这个前提下，"能不能执行命令"不该由模型的判断力兜底。
+1. **谁能把消息送进来** —— `webhook-weixin.config.allowed_user_ids`（iLink 的 `from_user_id` 白名单）。
+   连接器为**每个发送者**建独立会话，所以"不限制"意味着任何陌生人都能触发 Agent。
+   白名单之外的账号在 ingress 就被丢弃，不回执（避免把 bot 变成自动回复器），
+   只留一条 `ingress.poll.blocked` 探针。
+2. **这个 Agent 挂了什么工具** —— `config/presets/weixin-lite/agent.cordis.yml`。
 
-要扩权就往 `config/presets/weixin-lite/agent.cordis.yml` 里追加插件，并把文件复制回
+仓库自带的预设是"能干活"档：
+
+| 插件 | 提供的工具 | 说明 |
+|---|---|---|
+| `@deepseek-ai/dsh-persona` | — | 人格与提示词骨架 |
+| `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | 执行 PowerShell（仅 Windows 生效） |
+| `@deepseek-ai/dsh-tool-fs` | `read` `write` `edit` `read_image` | 文件读写 |
+| `@deepseek-ai/dsh-tool-fs-search` | `glob` `grep` | 文件名 / 内容检索 |
+| `@deepseek-ai/dsh-tool-jobs` | 后台任务控制 | 配合 `run_in_background` 取输出 / 终止 |
+
+权限档位不在预设里，而在宿主：`DSH_PERMISSION_MODE`（本项目为自动跑工具设成
+`danger-full-access`，审批策略随之变成 `never`）。**挂上工具后它就是真的无拦截**——
+这正是白名单必须存在、且必须在挂工具之前配好的原因。
+
+要收权：删掉对应行或加 `disabled: true`，再复制回
 `%USERPROFILE%\.dsh\.agent-presets\weixin-lite\`（Harness 只读用户目录下的预设）。
-常用的几个：`@deepseek-ai/dsh-tool-fs`（文件读写）、`dsh-terminal`（持久 shell，最危险）、
-`@deepseek-ai/dsh-tool-codex`（派活给 codex，见第 8 节）。
+只保留 `persona` 就退回纯对话形态，此时不配白名单也不至于出事（但启动日志会警告）。
 
 `harness_overlay/` 目录是本项目对 Harness 的改动（补丁 + 新增文件）与落位说明。
 
@@ -282,7 +298,7 @@ models:
 │   ├─ modelConfig.example.json
 │   ├─ secrets.example.json
 │   ├─ weixinProfile.patch.example.yml
-│   └─ presets/weixin-lite/    #   最小权限预设（只挂 persona），需复制到 ~/.dsh 才生效
+│   └─ presets/weixin-lite/    #   微信预设（persona+pwsh+fs+jobs），需复制到 ~/.dsh 才生效
 ├─ docs/                       # 设计文档（接口/记忆/Gemma/token/部署）
 ├─ gemma/                      # Gemma 下载与校验脚本 + 文件清单
 └─ harness_overlay/            # 对 DeepSeek Harness 的改动（补丁 + 新增源码）
@@ -310,7 +326,7 @@ models:
    漏掉 client 面会在启动时报 `agentPresets 服务缺失`——预设加载不了，微信连接器起不来。
    启动入口也必须走预编译产物 `node apps/cli/lib/bin.js`：用 `tsx` 会让同一个包实例化两份，
    表现为工具调用报 `Cannot read properties of undefined (reading 'prepare')`（原因见同文档 4.6）。
-4. 安装最小权限预设（**Harness 只读用户目录下的预设**，仓库里的只是权威副本）：
+4. 安装微信预设（**Harness 只读用户目录下的预设**，仓库里的只是权威副本）：
 
    ```powershell
    New-Item -ItemType Directory -Force "$env:USERPROFILE\.dsh\.agent-presets" | Out-Null
@@ -318,10 +334,19 @@ models:
    ```
 
    示例补丁里的 `agent_preset: weixin-lite` 指向的就是它；漏掉这步会报找不到预设。
-5. 拷一个 `config/weixinProfile.patch.example.yml` → `config/weixinProfile.patch.yml`，**填你自己的人格提示词**。
-6. `python start_stack.py` 起后端；`python weixin_login.py` 扫码绑定微信。
-7. 需要图形界面就起 `console/`（`start-console.cmd`）。
-8. 想让它在登录后自动跑，注册自启：
+5. 填 `allowed_user_ids`（**挂了 shell 工具就不许跳过**）。它是连接器唯一的身份闸门：
+   不配置时任何能给这个 bot 发消息的账号都会被受理，而 `weixin-lite` 现在带命令行工具。
+
+   ```powershell
+   # 自己的 wechat id（形如 oXXXX@im.wechat）从状态库的 route 表里取：
+   python -c "import sqlite3,os;print(sqlite3.connect(os.path.expanduser('~/.dsh/weixin-state.db')).execute('select user_id from route').fetchall())"
+   ```
+
+   写进补丁的 `webhook-weixin.config.allowed_user_ids`；留空数组 = 全拒（紧急止血）。
+6. 拷一个 `config/weixinProfile.patch.example.yml` → `config/weixinProfile.patch.yml`，**填你自己的人格提示词**。
+7. `python start_stack.py` 起后端；`python weixin_login.py` 扫码绑定微信。
+8. 需要图形界面就起 `console/`（`start-console.cmd`）。
+9. 想让它在登录后自动跑，注册自启：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File tools\install-autostart.ps1            # 注册
